@@ -817,6 +817,8 @@ def _collapse_candidate_bucket(
         selected.append(best)
 
     selected.sort(key=lambda item: float(item["center_y"]))
+    selected_rows_info: List[Dict[str, object]] = []
+    seen_row_keys = set()
     collapsed_rows: List[List[int]] = []
     previous_row: Optional[List[int]] = None
     duplicate_y_tol = max(1.0, 0.15 * typical_gap)
@@ -835,9 +837,36 @@ def _collapse_candidate_bucket(
             if row == previous_row and abs(current_y - previous_y) <= duplicate_y_tol:
                 continue
 
-        collapsed_rows.append(row)
+        row_key = tuple(row)
+        if row_key in seen_row_keys:
+            continue
+
+        seen_row_keys.add(row_key)
+        selected_rows_info.append({"y": current_y, "row": row, "key": row_key})
         previous_row = row
         previous_y = current_y
+
+    if expected_rows and expected_rows > 0 and len(selected_rows_info) < expected_rows:
+        for item in ordered:
+            current_y = float(item["center_y"])
+            row = [int(value) for value in item["row"]]
+            if target_cols > 0:
+                if len(row) > target_cols:
+                    row = row[:target_cols]
+                elif len(row) < target_cols:
+                    continue
+
+            row_key = tuple(row)
+            if row_key in seen_row_keys:
+                continue
+
+            seen_row_keys.add(row_key)
+            selected_rows_info.append({"y": current_y, "row": row, "key": row_key})
+            if len(selected_rows_info) >= expected_rows:
+                break
+
+    selected_rows_info.sort(key=lambda item: float(item["y"]))
+    collapsed_rows = [list(item["row"]) for item in selected_rows_info]
 
     if expected_rows and expected_rows > 0:
         collapsed_rows = collapsed_rows[:expected_rows]
