@@ -607,7 +607,7 @@ def _parse_arrays_from_lines(lines: List[str]) -> List[List[List[int]]]:
 
 def _row_candidates_from_detections(detections: List) -> List[Dict[str, object]]:
     candidates: List[Dict[str, object]] = []
-    for points, raw_text, _confidence in detections:
+    for points, raw_text, confidence in detections:
         text = _normalize_array_text(str(raw_text))
         matches = re.finditer(r"\(?\s*-?\d+(?:\s*,\s*-?\d+){5,}\s*\)?", text)
         ys = [p[1] for p in points]
@@ -623,6 +623,7 @@ def _row_candidates_from_detections(detections: List) -> List[Dict[str, object]]
                         "row": row,
                         "center_y": center_y,
                         "left": left,
+                        "confidence": float(confidence),
                     }
                 )
 
@@ -658,6 +659,7 @@ def _row_candidates_from_detections(detections: List) -> List[Dict[str, object]]
                     "row": merged_row,
                     "center_y": sum(float(item["center_y"]) for item in active_group) / len(active_group),
                     "left": min(float(item["left"]) for item in active_group),
+                    "confidence": sum(float(item.get("confidence", 0.0)) for item in active_group) / len(active_group),
                 }
             )
         active_group = [candidate]
@@ -672,6 +674,7 @@ def _row_candidates_from_detections(detections: List) -> List[Dict[str, object]]
                 "row": trailing_row,
                 "center_y": sum(float(item["center_y"]) for item in active_group) / len(active_group),
                 "left": min(float(item["left"]) for item in active_group),
+                "confidence": sum(float(item.get("confidence", 0.0)) for item in active_group) / len(active_group),
             }
         )
 
@@ -806,6 +809,7 @@ def _collapse_candidate_bucket(
             cluster,
             key=lambda item: (
                 -abs(len(item["row"]) - target_cols) if target_cols > 0 else len(item["row"]),
+                float(item.get("confidence", 0.0)),
                 len(item["row"]),
                 -float(item["left"]),
             ),
@@ -813,35 +817,13 @@ def _collapse_candidate_bucket(
         selected.append(best)
 
     selected.sort(key=lambda item: float(item["center_y"]))
-
-    if expected_rows and expected_rows > 0 and len(selected) < expected_rows:
-        selected_keys = {(tuple(item["row"]), float(item["center_y"])) for item in selected}
-        remaining = [
-            item
-            for item in ordered
-            if (tuple(item["row"]), float(item["center_y"])) not in selected_keys
-        ]
-
-        def _row_quality(item: Dict[str, object]) -> float:
-            row_len = len(item["row"])
-            len_score = -abs(row_len - target_cols) if target_cols > 0 else float(row_len)
-            y = float(item["center_y"])
-            if not selected:
-                spacing_score = 0.0
-            else:
-                spacing_score = min(abs(y - float(existing["center_y"])) for existing in selected)
-            return len_score + (0.05 * spacing_score)
-
-        while len(selected) < expected_rows and remaining:
-            best_extra = max(remaining, key=_row_quality)
-            selected.append(best_extra)
-            remaining.remove(best_extra)
-
-        selected.sort(key=lambda item: float(item["center_y"]))
-
-    eligible_rows: List[Dict[str, object]] = []
     collapsed_rows: List[List[int]] = []
+    previous_row: Optional[List[int]] = None
+    duplicate_y_tol = max(1.0, 0.15 * typical_gap)
+    previous_y: Optional[float] = None
+
     for item in selected:
+        current_y = float(item["center_y"])
         row = [int(value) for value in item["row"]]
         if target_cols > 0:
             if len(row) > target_cols:
@@ -849,49 +831,13 @@ def _collapse_candidate_bucket(
             elif len(row) < target_cols:
                 continue
 
-        eligible_rows.append({"center_y": float(item["center_y"]), "row": row})
+        if previous_row is not None and previous_y is not None:
+            if row == previous_row and abs(current_y - previous_y) <= duplicate_y_tol:
+                continue
+
         collapsed_rows.append(row)
-
-    if expected_rows and expected_rows > 0 and len(collapsed_rows) < expected_rows:
-        all_eligible: List[Dict[str, object]] = []
-        for item in ordered:
-            row = [int(value) for value in item["row"]]
-            if target_cols > 0:
-                if len(row) > target_cols:
-                    row = row[:target_cols]
-                elif len(row) < target_cols:
-                    continue
-            all_eligible.append({"center_y": float(item["center_y"]), "row": row})
-
-        if len(all_eligible) >= expected_rows:
-            all_eligible.sort(key=lambda candidate: float(candidate["center_y"]))
-            evenly_spaced: List[List[int]] = []
-            used_indices = set()
-
-            if expected_rows == 1:
-                evenly_spaced.append(list(all_eligible[0]["row"]))
-            else:
-                max_index = len(all_eligible) - 1
-                for slot in range(expected_rows):
-                    raw_index = round(slot * max_index / (expected_rows - 1))
-                    index = int(raw_index)
-                    if index in used_indices:
-                        shift = 1
-                        while index in used_indices and (index - shift >= 0 or index + shift <= max_index):
-                            left = index - shift
-                            right = index + shift
-                            if left >= 0 and left not in used_indices:
-                                index = left
-                                break
-                            if right <= max_index and right not in used_indices:
-                                index = right
-                                break
-                            shift += 1
-                    used_indices.add(index)
-                    evenly_spaced.append(list(all_eligible[index]["row"]))
-
-            if len(evenly_spaced) >= expected_rows:
-                collapsed_rows = evenly_spaced[:expected_rows]
+        previous_row = row
+        previous_y = current_y
 
     if expected_rows and expected_rows > 0:
         collapsed_rows = collapsed_rows[:expected_rows]
