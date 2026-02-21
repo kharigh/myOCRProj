@@ -828,9 +828,7 @@ def _collapse_candidate_bucket(
         current_y = float(item["center_y"])
         row = [int(value) for value in item["row"]]
         if target_cols > 0:
-            if len(row) > target_cols:
-                row = row[:target_cols]
-            elif len(row) < target_cols:
+            if len(row) != target_cols:
                 continue
 
         if previous_row is not None and previous_y is not None:
@@ -851,9 +849,7 @@ def _collapse_candidate_bucket(
             current_y = float(item["center_y"])
             row = [int(value) for value in item["row"]]
             if target_cols > 0:
-                if len(row) > target_cols:
-                    row = row[:target_cols]
-                elif len(row) < target_cols:
+                if len(row) != target_cols:
                     continue
 
             row_key = tuple(row)
@@ -918,12 +914,21 @@ def _score_arrays(arrays: List[List[List[int]]]) -> float:
     return sum(_score_array_block(block) for block in arrays)
 
 
+def _flatten_array_blocks(array_blocks: List[List[List[int]]]) -> List[List[int]]:
+    flattened: List[List[int]] = []
+    for block in array_blocks:
+        for row in block:
+            flattened.append(list(row))
+    return flattened
+
+
 def extract_numeric_arrays(
     image_path: Path,
     model_root: Optional[Path] = None,
     expected_arrays: Optional[int] = None,
     expected_rows: Optional[int] = None,
     expected_cols: Optional[int] = None,
+    split_arrays: bool = False,
 ) -> List[List[List[int]]]:
     if not image_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
@@ -963,6 +968,10 @@ def extract_numeric_arrays(
 
         if expected_arrays and expected_arrays > 0:
             merged_arrays = merged_arrays[:expected_arrays]
+
+        if merged_arrays and not split_arrays:
+            flattened_rows = _flatten_array_blocks(merged_arrays)
+            return [flattened_rows] if flattened_rows else []
 
         if merged_arrays and (expected_rows or expected_arrays):
             return merged_arrays
@@ -1028,6 +1037,7 @@ def extract_numeric_array(
         image_path,
         model_root=model_root,
         expected_cols=expected_cols,
+        split_arrays=False,
     )
     if not arrays:
         return []
@@ -1072,6 +1082,7 @@ def main() -> None:
     parser.add_argument("--cols", type=int, default=22, help="Expected number of array columns")
     parser.add_argument("--expected-arrays", type=int, default=3, help="Expected number of arrays")
     parser.add_argument("--expected-rows", type=int, default=10, help="Expected rows per array")
+    parser.add_argument("--split-arrays", action="store_true", help="Keep arrays split by labels instead of one ordered row list")
     parser.add_argument("--csv", default='out.csv', help="Optional output CSV path")
     parser.add_argument(
         "--model-root",
@@ -1089,6 +1100,7 @@ def main() -> None:
             expected_arrays=args.expected_arrays,
             expected_rows=args.expected_rows,
             expected_cols=args.cols,
+            split_arrays=args.split_arrays,
         )
         if args.cols and args.cols > 0:
             constrained: List[List[List[Optional[int]]]] = []
