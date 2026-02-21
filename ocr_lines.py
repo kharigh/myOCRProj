@@ -605,6 +605,64 @@ def _parse_arrays_from_lines(lines: List[str]) -> List[List[List[int]]]:
     return arrays
 
 
+def _extract_rows_in_order_from_lines(lines: List[str], expected_cols: Optional[int] = None) -> List[List[int]]:
+    ordered_rows: List[List[int]] = []
+
+    for line in lines:
+        normalized_line = _normalize_array_text(line)
+        matches = re.finditer(r"\(?\s*-?\d+(?:\s*,\s*-?\d+){3,}\s*\)?", normalized_line)
+        for match in matches:
+            row = _parse_row_text(match.group(0))
+            if expected_cols and expected_cols > 0:
+                if len(row) != expected_cols:
+                    continue
+            elif len(row) < 4:
+                continue
+
+            if ordered_rows and row == ordered_rows[-1]:
+                continue
+            ordered_rows.append(row)
+
+    return ordered_rows
+
+
+def _extract_rows_in_order_from_detections(detections: List, expected_cols: Optional[int] = None) -> List[List[int]]:
+    candidates: List[Dict[str, object]] = []
+
+    for points, raw_text, _confidence in detections:
+        text = _normalize_array_text(str(raw_text))
+        matches = re.finditer(r"\(?\s*-?\d+(?:\s*,\s*-?\d+){3,}\s*\)?", text)
+
+        ys = [p[1] for p in points]
+        xs = [p[0] for p in points]
+        center_y = float(sum(ys) / max(1, len(ys))) if ys else 0.0
+        left = float(min(xs)) if xs else 0.0
+
+        for match in matches:
+            row = _parse_row_text(match.group(0))
+            if expected_cols and expected_cols > 0:
+                if len(row) != expected_cols:
+                    continue
+            elif len(row) < 4:
+                continue
+
+            candidates.append({"row": row, "center_y": center_y, "left": left})
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda item: (float(item["center_y"]), float(item["left"])))
+
+    ordered_rows: List[List[int]] = []
+    for item in candidates:
+        row = list(item["row"])
+        if ordered_rows and row == ordered_rows[-1]:
+            continue
+        ordered_rows.append(row)
+
+    return ordered_rows
+
+
 def _row_candidates_from_detections(detections: List) -> List[Dict[str, object]]:
     candidates: List[Dict[str, object]] = []
     for points, raw_text, confidence in detections:
@@ -935,6 +993,47 @@ def extract_numeric_arrays(
 
     reader = _create_reader(model_root=model_root)
     variants = _load_image_variants(image_path)
+
+    detection_rows = _extract_rows_in_order_from_detections(
+        _best_detections(reader, variants[:1], numeric_only=False),
+        expected_cols=expected_cols,
+    )
+    if detection_rows:
+        if not split_arrays:
+            return [detection_rows]
+
+        if expected_rows and expected_rows > 0:
+            chunked_arrays: List[List[List[int]]] = []
+            for index in range(0, len(detection_rows), expected_rows):
+                chunk = detection_rows[index : index + expected_rows]
+                if chunk:
+                    chunked_arrays.append(chunk)
+
+            if expected_arrays and expected_arrays > 0:
+                chunked_arrays = chunked_arrays[:expected_arrays]
+            return chunked_arrays
+
+        return [detection_rows]
+
+    lines = extract_lines(image_path, model_root=model_root)
+    ordered_rows = _extract_rows_in_order_from_lines(lines, expected_cols=expected_cols)
+
+    if ordered_rows:
+        if not split_arrays:
+            return [ordered_rows]
+
+        if expected_rows and expected_rows > 0:
+            chunked_arrays: List[List[List[int]]] = []
+            for index in range(0, len(ordered_rows), expected_rows):
+                chunk = ordered_rows[index : index + expected_rows]
+                if chunk:
+                    chunked_arrays.append(chunk)
+
+            if expected_arrays and expected_arrays > 0:
+                chunked_arrays = chunked_arrays[:expected_arrays]
+            return chunked_arrays
+
+        return [ordered_rows]
 
     variant_rows: List[List[Dict[str, object]]] = []
     variant_labels: List[List[Dict[str, object]]] = []
